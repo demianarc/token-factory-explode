@@ -137,7 +137,8 @@ try {
   await wait(250);
   record('Aperture updates model and DOM', (await state())?.aperture === 'f/8.0' && await page.textContent('#apertureDisplay') === 'f/8.0');
   await slider('apertureInput', 16);
-  record('Aperture reaches f/16', (await state())?.aperture === 'f/16.0');
+  current = await state();
+  record('Aperture reaches f/16 and animates its opening', current?.aperture === 'f/16.0' && current?.irisAnimating && current?.visualFNumber < 16, { target: current?.aperture, visualFNumber: current?.visualFNumber });
   await slider('apertureInput', 1.8);
   record('Aperture reverses to f/1.8', (await state())?.aperture === 'f/1.8');
 
@@ -153,6 +154,7 @@ try {
   // Isolate the iris in the real exploded scene and capture both aperture extremes.
   await page.evaluate(() => window.__EA.setAssembly(100));
   await preset('lens');
+  await shot('24-lens-detail-exploded');
   await page.evaluate(() => {
     window.__EA.select('aperture');
     document.getElementById('focusSelected').click();
@@ -191,7 +193,9 @@ try {
   record('Showcase cancellation works', (await state())?.showcase === false);
   await reset();
   await page.evaluate(() => document.getElementById('showcaseBtn').click());
-  await wait(20700);
+  await wait(11600);
+  await shot('25-showcase-lens');
+  await wait(9100);
   current = await state();
   record('Showcase completes assembled at Hero', current?.showcase === false && current?.assembly === 0 && current?.preset === 'hero', current);
 

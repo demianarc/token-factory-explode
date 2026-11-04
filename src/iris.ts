@@ -25,12 +25,13 @@ export class Iris {
       this.group.add(blade);
       this.blades.push(blade);
     }
-    this.set(1.8);
+    this.set(1.8, true);
   }
 
-  set(f: number) {
-    this.current = this.target = THREE.MathUtils.clamp(f, 1.8, 16);
-    this.updateGeometry();
+  set(f: number, immediate = false) {
+    this.target = THREE.MathUtils.clamp(f, 1.8, 16);
+    if (immediate) this.current = this.target;
+    if (immediate) this.updateGeometry();
   }
 
   update(dt: number) {
@@ -59,5 +60,6 @@ export class Iris {
   }
 
   get fNumber() { return this.target; }
+  get visualFNumber() { return this.current; }
   get isAnimating() { return Math.abs(this.current - this.target) > 0.02; }
 }

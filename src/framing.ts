@@ -7,6 +7,7 @@ const OPTICAL_PARTS = [
   'element1', 'element2', 'element3', 'element4', 'element5', 'element6',
   'spacer1', 'spacer2',
 ];
+const EXPLODED_OPTICAL_PARTS = ['aperture', 'element1', 'element2', 'element3', 'element4', 'element5', 'element6'];
 const SENSOR_PARTS = ['sensorPCB', 'sensor', 'shutter'];
 
 const DIRECTIONS: Record<PresetName, THREE.Vector3> = {
@@ -14,7 +15,7 @@ const DIRECTIONS: Record<PresetName, THREE.Vector3> = {
   front: new THREE.Vector3(0, 0.07, 1).normalize(),
   rear: new THREE.Vector3(-3.3, 1.5, -8).normalize(),
   exploded: new THREE.Vector3(5.8, 3.2, 10).normalize(),
-  lens: new THREE.Vector3(3.0, 1.15, 7).normalize(),
+  lens: new THREE.Vector3(4.2, -0.55, 9).normalize(),
   sensor: new THREE.Vector3(2.7, 1.35, 7).normalize(),
 };
 
@@ -77,19 +78,25 @@ export function poseForPreset(
   aspect: number,
   currentAssembly: number,
 ): CameraPose {
-  const fitAssembly = preset === 'exploded' ? 100 : ['lens', 'sensor'].includes(preset) ? Math.max(currentAssembly, 65) : currentAssembly;
-  const ids = preset === 'lens' ? OPTICAL_PARTS : preset === 'sensor' ? SENSOR_PARTS : undefined;
+  const fitAssembly = preset === 'exploded' ? 100 : preset === 'sensor' ? Math.max(currentAssembly, 65) : currentAssembly;
+  const lensParts = currentAssembly > 0 ? EXPLODED_OPTICAL_PARTS : OPTICAL_PARTS;
+  const ids = preset === 'lens' ? lensParts : preset === 'sensor' ? SENSOR_PARTS : undefined;
   const { bounds, points } = model.getFitGeometryAt(fitAssembly, ids);
 
   const narrow = aspect < 0.9;
   const fitting: Record<PresetName, [number, number]> = narrow ? {
     hero: [0.89, 0.64], front: [0.86, 0.64], rear: [0.86, 0.64],
-    exploded: [0.9, 0.70], lens: [0.86, 0.67], sensor: [0.88, 0.62],
+    exploded: [0.9, 0.70], lens: [0.85, 0.65], sensor: [0.88, 0.62],
   } : {
     hero: [0.60, 0.76], front: [0.57, 0.75], rear: [0.57, 0.75],
-    exploded: [0.84, 0.78], lens: [0.70, 0.73], sensor: [0.57, 0.64],
+    exploded: [0.84, 0.78], lens: [0.78, 0.68], sensor: [0.57, 0.64],
   };
-  return fitBounds(camera, bounds, DIRECTIONS[preset], aspect, ...fitting[preset], points);
+  const direction = DIRECTIONS[preset].clone();
+  if (preset === 'lens' && currentAssembly > 0) {
+    fitting.lens = narrow ? [0.84, 0.70] : [0.82, 0.78];
+    direction.set(5.6, -0.65, 9).normalize();
+  }
+  return fitBounds(camera, bounds, direction, aspect, ...fitting[preset], points);
 }
 
 export function poseForAssembly(

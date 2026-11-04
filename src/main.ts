@@ -188,14 +188,15 @@ function initScene() {
   const rect = container.getBoundingClientRect();
   const width = Math.max(1, Math.round(rect.width));
   const height = Math.max(1, Math.round(rect.height));
-  renderer = new THREE.WebGLRenderer({ antialias: window.devicePixelRatio <= 2, canvas: canvasElement, alpha: true, powerPreference: 'high-performance' });
+  renderer = new THREE.WebGLRenderer({ antialias: window.devicePixelRatio <= 2, canvas: canvasElement, alpha: false, powerPreference: 'high-performance' });
   renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
   renderer.setSize(width, height, false);
   renderer.shadowMap.enabled = true;
   renderer.shadowMap.type = THREE.PCFSoftShadowMap;
   renderer.toneMapping = THREE.ACESFilmicToneMapping;
   renderer.toneMappingExposure = 1.08;
-  renderer.setClearColor('#151719', 0);
+  // An opaque clear color gives isolated transmissive optics a dark transmission backdrop.
+  renderer.setClearColor('#17191b', 1);
 
   scene = new THREE.Scene();
   const room = new RoomEnvironment();
@@ -206,7 +207,7 @@ function initScene() {
   room.dispose();
   pmrem.dispose();
 
-  const key = new THREE.DirectionalLight('#fff4e5', 2.7);
+  const key = new THREE.DirectionalLight('#fff4e5', 2.35);
   key.position.set(4, 7, 8);
   key.castShadow = true;
   key.shadow.mapSize.set(2048, 2048);
@@ -219,16 +220,16 @@ function initScene() {
   key.shadow.bias = -0.0004;
   key.shadow.normalBias = 0.025;
   scene.add(key);
-  const fill = new THREE.DirectionalLight('#d9e7ff', 1.35);
+  const fill = new THREE.DirectionalLight('#d9e7ff', 1.0);
   fill.position.set(-5, 3, 5);
   scene.add(fill);
   const rim = new THREE.DirectionalLight('#f0f3ff', 1.8);
   rim.position.set(-2, 5, -6);
   scene.add(rim);
 
-  const ground = new THREE.Mesh(new THREE.PlaneGeometry(40, 40), new THREE.ShadowMaterial({ color: '#000000', opacity: 0.32 }));
+  const ground = new THREE.Mesh(new THREE.PlaneGeometry(40, 40), new THREE.ShadowMaterial({ color: '#000000', opacity: 0.25 }));
   ground.rotation.x = -Math.PI / 2;
-  ground.position.y = -1.72;
+  ground.position.y = -1.65;
   ground.receiveShadow = true;
   scene.add(ground);
 
@@ -511,7 +512,8 @@ function setPoseTween(pose: CameraPose, durationMs = 900) {
 }
 
 function goToPose(preset: PresetName, durationMs = 900) {
-  model.setIsolation(preset === 'sensor' ? ['sensorPCB', 'sensor', 'shutter'] : null);
+  const isolatedOptics = ['aperture', 'element1', 'element2', 'element3', 'element4', 'element5', 'element6'];
+  model.setIsolation(preset === 'sensor' ? ['sensorPCB', 'sensor', 'shutter'] : preset === 'lens' && assembly > 0 ? isolatedOptics : null);
   const selectedComponent = model.components.find(component => component.id === selectedId);
   if (selectedComponent && !selectedComponent.group.visible) selectPart(null);
   const aspect = canvasElement.clientWidth / Math.max(1, canvasElement.clientHeight);
@@ -729,7 +731,7 @@ function exposeDebug() {
   (window as unknown as Record<string, unknown>).__EA = {
     get state() {
       return {
-        assembly, aperture: `f/${aperture.toFixed(1)}`, parts: model.components.length,
+        assembly, aperture: `f/${aperture.toFixed(1)}`, irisAnimating: model.iris.isAnimating, visualFNumber: model.iris.visualFNumber, parts: model.components.length,
         visibleParts: model.components.filter(component => component.group.visible).length, selected: selectedId, mode,
         playing: playTween !== null, showcase, sensorExposed: model.sensorExposed,
         assembledError: model.components.reduce((sum, component) => sum + (component.group.userData.stage as number), 0),

@@ -128,17 +128,21 @@ export function textPlane(text: string, width: number, height: number, options: 
 
 export function gripTexture() {
   const canvas = document.createElement('canvas');
-  canvas.width = canvas.height = 128;
+  canvas.width = canvas.height = 192;
   const ctx = canvas.getContext('2d')!;
-  ctx.fillStyle = '#777'; ctx.fillRect(0, 0, 128, 128);
-  for (let y = 0; y < 128; y += 4) for (let x = 0; x < 128; x += 4) {
-    const n = ((x * 13 + y * 71) % 37) / 37;
-    ctx.fillStyle = `rgb(${80 + n * 90},${80 + n * 90},${80 + n * 90})`;
-    ctx.beginPath(); ctx.arc(x + (y % 8 ? 2 : 0), y, 1.15, 0, Math.PI * 2); ctx.fill();
+  ctx.fillStyle = '#898989'; ctx.fillRect(0, 0, 192, 192);
+  // A staggered, irregular pebble grain stays legible at the hero camera distance.
+  for (let y = 0; y < 192; y += 7) for (let x = 0; x < 192; x += 7) {
+    const n = ((x * 13 + y * 71) % 41) / 41;
+    const shade = Math.round(100 + n * 82);
+    ctx.fillStyle = `rgb(${shade},${shade},${shade})`;
+    ctx.beginPath();
+    ctx.ellipse(x + (Math.floor(y / 7) % 2 ? 3 : 0), y, 1.5 + n * 0.55, 1.25 + n * 0.45, n * 1.2, 0, Math.PI * 2);
+    ctx.fill();
   }
   const texture = new THREE.CanvasTexture(canvas);
   texture.wrapS = texture.wrapT = THREE.RepeatWrapping;
-  texture.repeat.set(5, 5);
+  texture.repeat.set(3.5, 3.5);
   return texture;
 }
 
@@ -166,14 +170,37 @@ export function brushedTexture() {
   return texture;
 }
 
-export function screw(material: THREE.Material, dark: THREE.Material, scale = 1) {
+export function screw(material: THREE.Material, dark: THREE.Material, scale = 0.46) {
   const root = new THREE.Group();
-  const head = cylinder(0.065 * scale, 0.065 * scale, 0.035 * scale, material, [0, 0, 0], 16);
+  // At the ~130 mm body scale, a 0.46 head is about 1.7 mm across.
+  const head = cylinder(0.065 * scale, 0.058 * scale, 0.025 * scale, material, [0, 0, -0.019 * scale], 32);
   root.add(head);
-  root.add(box(0.077 * scale, 0.018 * scale, 0.008 * scale, dark, 0.002, [0, 0, 0.020 * scale]));
-  root.add(box(0.018 * scale, 0.077 * scale, 0.008 * scale, dark, 0.002, [0, 0, 0.020 * scale]));
-  const shaft = cylinder(0.032 * scale, 0.032 * scale, 0.11 * scale, material, [0, 0, -0.04 * scale], 12);
-  root.add(shaft);
+  const cap = new THREE.Shape();
+  cap.absarc(0, 0, 0.065 * scale, 0, Math.PI * 2, false);
+  const arm = 0.011 * scale;
+  const reach = 0.043 * scale;
+  const recess = new THREE.Path();
+  const points = [
+    [-arm, -reach], [arm, -reach], [arm, -arm], [reach, -arm],
+    [reach, arm], [arm, arm], [arm, reach], [-arm, reach],
+    [-arm, arm], [-reach, arm], [-reach, -arm], [-arm, -arm],
+  ];
+  points.forEach(([x, y], i) => i ? recess.lineTo(x, y) : recess.moveTo(x, y));
+  recess.closePath();
+  cap.holes.push(recess);
+  const faceGeometry = new THREE.ExtrudeGeometry(cap, {
+    depth: 0.007 * scale, bevelEnabled: false, curveSegments: 12,
+  });
+  faceGeometry.translate(0, 0, -0.007 * scale);
+  // The cross is cut into the metal face, not drawn on top as a sticker.
+  root.add(new THREE.Mesh(faceGeometry, [material, dark]));
+  const crossFloor = new THREE.Shape();
+  points.forEach(([x, y], i) => i ? crossFloor.lineTo(x, y) : crossFloor.moveTo(x, y));
+  crossFloor.closePath();
+  const floor = new THREE.Mesh(new THREE.ShapeGeometry(crossFloor), dark);
+  floor.position.z = -0.0055 * scale;
+  root.add(floor);
+  root.add(cylinder(0.026 * scale, 0.026 * scale, 0.12 * scale, material, [0, 0, -0.065 * scale], 16));
   return root;
 }
 

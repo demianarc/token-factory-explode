@@ -57,15 +57,16 @@ export class CameraModel {
   private buildMaterials() {
     const add = (key: string, material: THREE.Material) => this.materials.set(key, material);
     add('graphite', new THREE.MeshStandardMaterial({ color: '#252729', metalness: 0.42, roughness: 0.48 }));
-    add('grip', new THREE.MeshStandardMaterial({ color: '#282526', metalness: 0.04, roughness: 0.9, map: gripTexture(), bumpMap: gripTexture(), bumpScale: 0.025 }));
+    add('grip', new THREE.MeshStandardMaterial({ color: '#242526', metalness: 0.03, roughness: 0.82, map: gripTexture(), bumpMap: gripTexture(), bumpScale: 0.028 }));
     add('brushed', new THREE.MeshStandardMaterial({ color: '#aaa7a1', metalness: 0.87, roughness: 0.33, map: brushedTexture() }));
     add('darkMetal', new THREE.MeshStandardMaterial({ color: '#4c5154', metalness: 0.86, roughness: 0.34 }));
     add('silver', new THREE.MeshStandardMaterial({ color: '#c9c6bf', metalness: 0.92, roughness: 0.23 }));
     add('plastic', new THREE.MeshStandardMaterial({ color: '#17191b', metalness: 0.04, roughness: 0.7 }));
     add('glass', new THREE.MeshPhysicalMaterial({
-      color: '#adc9cf', metalness: 0, roughness: 0.055, transmission: 0.96,
-      thickness: 0.16, ior: 1.46, clearcoat: 0.4, clearcoatRoughness: 0.08,
-      envMapIntensity: 0.65, attenuationColor: '#86a9bd', attenuationDistance: 3.5,
+      color: '#f7fafb', metalness: 0, roughness: 0.018, transmission: 0.985,
+      thickness: 0.08, ior: 1.46, clearcoat: 1, clearcoatRoughness: 0.025,
+      envMapIntensity: 1.2, specularIntensity: 1, attenuationColor: '#e4ebef', attenuationDistance: 6,
+      iridescence: 0.58, iridescenceIOR: 1.36, iridescenceThicknessRange: [160, 400],
     }));
     add('sensorFace', new THREE.MeshPhysicalMaterial({ color: '#819fb2', metalness: 0.82, roughness: 0.13, iridescence: 0.65, iridescenceIOR: 1.6, iridescenceThicknessRange: [100, 340], clearcoat: 0.4 }));
     add('pcb', new THREE.MeshStandardMaterial({ color: '#d0d8ca', metalness: 0.26, roughness: 0.55, map: pcbTexture() }));
@@ -237,16 +238,21 @@ export class CameraModel {
       box(0.25, 0.025, 0.16, m('darkMetal'), 0.012, [1.77, -1.68, 0.26]),
     ], [1.1, -2.2, 0.6], [0.12, 0.1, 0]);
 
-    const screwPositions: [number, number, number][] = [
-      [-2.03, 1.25, 0.59], [1.28, 1.25, 0.59], [-2.03, -1.25, 0.59], [1.30, -1.25, 0.59],
+    const fasteners = [
+      // Two small flange fasteners, one cover screw, and one bottom-plate screw.
+      { position: [MOUNT_X - 1.04, OPTICAL_Y + 0.85, 0.579], axis: 'z' as const, offset: [-0.65, 0.45, 1.05], rotation: [0, 0, 0] as AxisRotation },
+      { position: [MOUNT_X + 1.04, OPTICAL_Y - 0.85, 0.579], axis: 'z' as const, offset: [0.65, -0.45, 1.25], rotation: [0, 0, 0] as AxisRotation },
+      { position: [-2.09, 0, 0.579], axis: 'z' as const, offset: [-0.85, 0.15, 1.45], rotation: [0, 0, 0] as AxisRotation },
+      { position: [MOUNT_X + 0.48, -1.622, -0.13], axis: 'y' as const, offset: [0.45, -0.75, 0.35], rotation: [-Math.PI / 2, 0, 0.2] as AxisRotation },
     ];
-    screwPositions.forEach((position, i) => {
-      const fastener = screw(m('silver'), m('blackMatte'), 1.3);
-      fastener.position.set(...position);
+    fasteners.forEach(({ position, axis, offset, rotation }, i) => {
+      const fastener = screw(m('silver'), m('blackMatte'));
+      fastener.position.set(...position as [number, number, number]);
+      if (axis === 'y') fastener.rotation.x = Math.PI / 2;
       this.addBodyPart({
         id: `screw${i + 1}`, name: `Mounting screw ${i + 1}`, category: 'Hardware', parent: 'Exterior', stage: 62, duration: 28,
-        description: 'Representative slotted fastener locating an exterior panel on the internal chassis.',
-      }, [fastener], [(i % 2 ? 0.45 : -0.45), i < 2 ? 0.45 : -0.45, 1.1 + i * 0.18]);
+        description: 'Small cross-recessed fastener at a lens-mount flange, cover seam, or bottom-plate attachment point.',
+      }, [fastener], offset as [number, number, number], rotation);
     });
   }
 
@@ -397,7 +403,8 @@ export class CameraModel {
       [2.71, 1.015, 0.15], [2.33, 0.91, 0.13], [1.97, 0.78, 0.12],
       [1.67, 0.72, 0.105], [1.18, 0.91, 0.12], [0.94, 0.78, 0.10],
     ];
-    const glassTints = ['#a9c7d8', '#a6c8bb', '#b5afd1', '#a7c2d0', '#b7c8ae', '#a8b7d2'];
+    // Keep the glass almost clear; subtle thin-film variation supplies the coating color.
+    const glassTints = ['#deedf7', '#deeee2', '#e9e0f3', '#deebf3', '#e2ecdd', '#e1e6f4'];
     opticalGroups.forEach(([z, radius, thickness], i) => {
       const glassMaterial = (m('glass') as THREE.MeshPhysicalMaterial).clone();
       glassMaterial.color.set(glassTints[i]);
