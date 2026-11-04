@@ -1,8 +1,10 @@
 import * as THREE from 'three';
 import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
+import { RoomEnvironment } from 'three/addons/environments/RoomEnvironment.js';
 import { CameraModel } from './model';
 import { SHOWCASE_SCORE } from './explosion';
-import type { PresetName, ViewMode } from './types';
+import { poseForPreset, poseForSelection, poseForAssembly } from './framing';
+import type { CameraPose, PresetName, ViewMode } from './types';
 import './styles.css';
 
 let renderer: THREE.WebGLRenderer;
@@ -10,765 +12,770 @@ let controls: OrbitControls;
 let scene: THREE.Scene;
 let camera: THREE.PerspectiveCamera;
 let model: CameraModel;
+let environmentTarget: THREE.WebGLRenderTarget;
+let canvasElement: HTMLCanvasElement;
 let assembly = 0;
 let aperture = 1.8;
 let selectedId: string | null = null;
+let hoveredId: string | null = null;
 let mode: ViewMode = 'materials';
-let playing = false;
 let showcase = false;
 let playTween: { from: number; to: number; start: number; duration: number } | null = null;
+let poseTween: { fromPos: THREE.Vector3; toPos: THREE.Vector3; fromTarget: THREE.Vector3; toTarget: THREE.Vector3; start: number; duration: number } | null = null;
 let showcaseStartTime = 0;
 let showcaseFrameId = 0;
-let poseTween: { fromPos: THREE.Vector3; toPos: THREE.Vector3; fromTarget: THREE.Vector3; toTarget: THREE.Vector3; start: number; duration: number } | null = null;
-const raycaster = new THREE.Raycaster();
-const mouse = new THREE.Vector2();
-let isPointerDown = false;
-let clickDistanceSq = 0;
+let renderFrameId = 0;
+let activePreset: PresetName | null = 'hero';
 let reducedMotion = window.matchMedia('(prefers-reduced-motion: reduce)').matches;
-let canvasElement: HTMLCanvasElement;
+let rendering = true;
+const raycaster = new THREE.Raycaster();
+const pointer = new THREE.Vector2();
+const listeners = new AbortController();
+let resizeObserver: ResizeObserver;
 
-const posPresets: Record<PresetName, { pos: [number,number,number]; target: [number,number,number] }> = {
-  hero: { pos: [3.56, 1.77, 5.94], target: [0, 0.16, 0.15] },
-  front: { pos: [0, 0.16, 6.0], target: [0, 0.16, 0.15] },
-  rear: { pos: [0, 0.16, -5.5], target: [0, 0.16, 0.00] },
-  exploded: { pos: [4.32, 2.62, 7.94], target: [0.4, 0.4, 0] },
-  lens: { pos: [3.12, 1.55, 6.66], target: [0, 0.16, 2.60] },
-  sensor: { pos: [2.5, 1.3, 3.5], target: [0, 0.16, 0.30] },
-};
-
-// DOM helpers
 function getEl<T extends HTMLElement>(id: string): T {
-  return document.getElementById(id) as T;
+  const element = document.getElementById(id);
+  if (!element) throw new Error(`Missing interface element: ${id}`);
+  return element as T;
 }
 
-function escapeHtml(s: string) {
-  return s.replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c] ?? ''));
+function escapeHtml(value: string) {
+  return value.replace(/[&<>"']/g, character => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[character] ?? ''));
 }
 
-// UI construction
+function on<K extends keyof HTMLElementEventMap>(element: HTMLElement | Document, type: K, handler: (event: HTMLElementEventMap[K]) => void) {
+  element.addEventListener(type, handler as EventListener, { signal: listeners.signal });
+}
+
 function buildUI() {
-  const app = getEl('app');
-  app.innerHTML = `
+  getEl('app').innerHTML = `
     <div class="app-shell mode-materials" data-assembled="true">
-      <div class="view-container" id="viewContainer">
-        <canvas id="scene" aria-label="Interactive 3D camera model"></canvas>
-        <div class="loading-indicator" id="loading">Loading…</div>
-      </div>
-
       <header class="top-bar">
-        <h1 class="wordmark">EXPLODE<span class="accent">ANYTHING</span></h1>
-        <div class="header-right" id="headerActions">
-          <button class="btn btn-ghost btn-sm" id="presentBtn" aria-label="Enter presentation mode" title="Presentation mode (hides panels)">
-            <svg width="12" height="12" viewBox="0 0 16 16" fill="currentColor"><path d="M3 1h10a1 1 0 011 1v8a1 1 0 01-1 1H9v1h1a1 1 0 110 2H6a1 1 0 110-2h1v-1H3a1 1 0 01-1-1V2a1 1 0 011-1z"/></svg>
+        <div class="brand-lockup">
+          <h1 class="wordmark">EXPLODE<span class="accent">ANYTHING</span></h1>
+          <span class="eyebrow brand-subtitle">Inside a mirrorless camera</span>
+        </div>
+        <p class="intro">Pull it apart. Discover what makes the image.</p>
+        <div class="header-actions" id="headerActions">
+          <button class="btn btn-ghost btn-sm icon-btn" id="presentBtn" aria-label="Enter presentation mode" title="Presentation mode">
+            <svg width="13" height="13" viewBox="0 0 16 16" fill="currentColor" aria-hidden="true"><path d="M3 1h10a1 1 0 011 1v8a1 1 0 01-1 1H9v1h1a1 1 0 110 2H6a1 1 0 110-2h1v-1H3a1 1 0 01-1-1V2a1 1 0 011-1z"/></svg>
           </button>
           <button class="btn btn-ghost btn-sm" id="showcaseBtn" aria-label="Play 20-second showcase">
-            <svg width="12" height="12" viewBox="0 0 16 16" fill="currentColor"><path d="M4 2l8 6-8 6V2z"/></svg>
-            Showcase
+            <svg width="11" height="11" viewBox="0 0 16 16" fill="currentColor" aria-hidden="true"><path d="M4 2l8 6-8 6V2z"/></svg>
+            Play showcase
           </button>
-          <div class="header-badge" id="assemblyBadge">0%</div>
+          <span class="header-badge" id="assemblyBadge" aria-hidden="true">0%</span>
         </div>
-        <div class="presentation-bar" id="presentationBar" style="display:none">
+        <div class="presentation-bar" id="presentationBar">
           <span class="presentation-label">Presentation</span>
           <button class="btn btn-ghost btn-sm" id="exitPresent">Exit</button>
         </div>
       </header>
 
-      <aside class="title-block" id="titleBlock">
-        <p class="eyebrow">Inside a mirrorless camera</p>
-        <h2>Pull it apart.<br><span class="dim">Discover what makes<br>the image.</span></h2>
-        <p class="note">Conceptual assembly. Geometry and optical behavior are simplified.</p>
-      </aside>
-
-      <aside class="inspector" id="inspector">
-        <div class="inspector-section bordered" id="inspectionPanel">
-          <div class="panel-heading">
-            <span class="dot"></span><span>Inspect</span>
-            <span class="inspection-header-actions"><button id="clearSelBtn" aria-label="Clear selection" title="Clear selection (Escape)">✕</button></div>
+      <main class="stage">
+        <section class="view-container" id="viewContainer" aria-label="3D exhibit">
+          <canvas id="scene" aria-label="Interactive 3D mirrorless camera. Drag to orbit and click a part to inspect it."></canvas>
+          <p class="concept-note">Conceptual assembly. Geometry and optical behavior are simplified.</p>
+          <nav class="view-controls" aria-label="Camera and display controls">
+            <span class="section-label">View</span>
+            <div class="preset-row">
+              <button class="btn-preset active" data-preset="hero">Hero</button>
+              <button class="btn-preset" data-preset="front">Front</button>
+              <button class="btn-preset" data-preset="rear">Rear</button>
+              <button class="btn-preset" data-preset="exploded">Exploded</button>
+              <button class="btn-preset" data-preset="lens">Lens detail</button>
+            </div>
+            <div class="mode-row" aria-label="Display mode">
+              <button class="btn-mode active" data-mode="materials">Materials</button>
+              <button class="btn-mode" data-mode="technical">Technical</button>
+              <button class="btn-mode" data-mode="xray">X-ray</button>
+            </div>
+          </nav>
+          <button class="mobile-panel-toggle" id="mobilePanelToggle" aria-label="Show details panel" aria-expanded="false" aria-controls="inspector">Details ↑</button>
+          <div class="labels-layer" id="labelsLayer" aria-live="polite"></div>
+          <div class="loading-indicator" id="loading" hidden>Preparing the exhibit…</div>
+          <div class="webgl-fallback" id="webglFallback" role="alert" hidden>
+            <h2>The 3D exhibit couldn’t start.</h2>
+            <p id="fallbackMessage">WebGL is unavailable. Enable hardware acceleration or open this page in a current browser with WebGL support, then reload.</p>
           </div>
-          <div class="inspection-content" id="inspectionContent">
-            <div class="inspection-default">Hover a part to see its name.<br>Click to select.</div>
-          </div>
-        </div>
+        </section>
 
-        <div class="inspector-section">
-          <div class="section-label">Mechanisms</div>
-          <div class="mech-group">
-            <div class="mech-label">APERTURE <span class="sr-only">Simplified visualization</span></div>
-            <div class="aperture-display" id="apertureDisplay">f/1.8</div>
+        <aside class="inspector" id="inspector" aria-label="Component inspection and mechanisms">
+          <section class="inspector-section">
+            <div class="panel-heading"><span class="dot"></span><span>Inspect</span><span class="panel-actions"><button id="clearSelBtn" aria-label="Clear selection" title="Clear selection (Escape)">✕</button></span></div>
+            <div class="inspection-content" id="inspectionContent">
+              <div class="inspection-default">Hover a part to see its name.<br>Click to select and inspect.</div>
+            </div>
+          </section>
+          <section class="inspector-section">
+            <div class="section-label">Mechanisms</div>
+            <div class="mechanism-heading"><span class="mech-label">Aperture</span><span class="aperture-display" id="apertureDisplay">f/1.8</span></div>
             <div class="range-row">
               <span class="range-value">f/1.8</span>
-              <input type="range" min="1.8" max="16" step="0.1" value="1.8" id="apertureInput" aria-label="Aperture f-stop" class="range-input">
+              <input type="range" min="1.8" max="16" step="0.1" value="1.8" id="apertureInput" aria-label="Aperture f-stop">
               <span class="range-value">f/16</span>
             </div>
-            <div class="mech-label" style="font-size:10px;opacity:.5">Simplified visualization</div>
-
-            <button class="btn btn-ghost btn-sm" id="shutterBtn" style="margin-top:12px;width:100%;font-size:11px;">
-              <svg width="12" height="12" viewBox="0 0 16 16" fill="currentColor"><path d="M8 1a7 7 0 100 14A7 7 0 008 1z"/><circle cx="8" cy="8" r="2.5" fill="#151719"/></svg>
-              Release shutter
-            </button>
-            <button class="btn btn-ghost btn-sm" id="sensorFocusBtn" style="margin-top:6px;width:100%;font-size:10px;">Sensor detail preset</button>
-
-            <div style="margin-top:12px;">
-              <label for="lightRayToggle" style="font-size:10px;display:flex;align-items:center;gap:6px;cursor:pointer;">
-                <input type="checkbox" id="lightRayToggle" style="accent-color:var(--accent);">
-                <span class="mech-label" style="margin:0;font-size:10px;">Light-path rays <span style="opacity:.5">(schematic)</span></span>
-              </label>
+            <p class="helper">Simplified overlapping-iris visualization.</p>
+            <div class="mechanism-buttons">
+              <button class="btn btn-ghost btn-sm" id="shutterBtn">Release shutter</button>
+              <button class="btn btn-ghost btn-sm" id="sensorFocusBtn">Sensor detail</button>
             </div>
-          </div>
-        </div>
-
-        <div class="inspector-section">
-          <div class="section-label">Parts</div>
-          <div class="parts-list" id="partsList"></div>
-        </div>
-      </aside>
-
-      <nav class="view-controls" id="viewControls">
-        <span class="section-label" style="margin:0 0 4px;align-self:flex-start">View</span>
-        <div class="preset-row">
-          <button class="btn-preset active" data-preset="hero">Hero</button>
-          <button class="btn-preset" data-preset="front">Front</button>
-          <button class="btn-preset" data-preset="rear">Rear</button>
-          <button class="btn-preset" data-preset="exploded">Exploded</button>
-          <button class="btn-preset" data-preset="lens">Lens detail</button>
-        </div>
-        <div class="mode-row">
-          <button class="btn-mode active" data-mode="materials">Materials</button>
-          <button class="btn-mode" data-mode="technical">Technical</button>
-          <button class="btn-mode" data-mode="xray">X-ray</button>
-        </div>
-      </nav>
+            <label class="ray-toggle" for="lightRayToggle">
+              <input type="checkbox" id="lightRayToggle">
+              <span>Light-path rays<small>Schematic, not a ray-traced simulation.</small></span>
+            </label>
+          </section>
+          <section class="inspector-section">
+            <div class="section-label">Parts</div>
+            <div class="parts-list" id="partsList"></div>
+          </section>
+        </aside>
+      </main>
 
       <footer class="assembly-bar" id="assemblyBar">
         <div class="assembly-readout">
-          <span class="section-label" style="margin:0;white-space:nowrap">Assembly</span>
+          <span class="section-label">Assembly</span>
           <span class="assembly-percent" id="assemblyPercent">0<small>%</small></span>
         </div>
         <div class="assembly-slider">
-          <div class="assembly-track" id="assemblyTrack">
-            <div class="assembly-fill" id="assemblyFill"></div>
-          </div>
-          <input type="range" min="0" max="100" step="0.5" value="0" id="assemblyInput" aria-label="Assembly slider" aria-valuetext="0 percent assembled">
-          <div class="assembly-marks" style="position:relative;height:14px;margin-top:2px">
-            <span style="position:absolute;left:0">0</span>
-            <span style="position:absolute;left:20%">20</span>
-            <span style="position:absolute;left:40%">40</span>
-            <span style="position:absolute;left:60%">60</span>
-            <span style="position:absolute;left:80%">80</span>
-            <span style="position:absolute;right:0">100</span>
-          </div>
+          <div class="assembly-track"><div class="assembly-fill" id="assemblyFill"></div></div>
+          <input type="range" min="0" max="100" step="0.5" value="0" id="assemblyInput" aria-label="Assembly: zero assembled, one hundred exploded" aria-valuetext="0 percent exploded">
+          <div class="assembly-marks" aria-hidden="true"><span>0</span><span>20</span><span>40</span><span>60</span><span>80</span><span>100</span></div>
         </div>
         <div class="transport-btns">
-          <button class="transport-btn" id="explodeBtn" aria-label="Fully explode">◈ Explode</button>
-          <button class="transport-btn" id="assembleBtn" aria-label="Fully assemble">◆ Assemble</button>
-          <button class="transport-btn play-btn" id="playBtn" aria-label="Play / Pause">
-            <svg id="playIcon" width="12" height="12" viewBox="0 0 16 16" fill="currentColor"><path d="M4 2l8 6-8 6V2z"/></svg>
-            <svg id="pauseIcon" width="12" height="12" viewBox="0 0 16 16" fill="currentColor" style="display:none"><path d="M3 2h3v12H3zm7 0h3v12h-3z"/></svg>
+          <button class="transport-btn" id="explodeBtn" aria-label="Fully explode"><span class="button-symbol">◈</span> Explode</button>
+          <button class="transport-btn" id="assembleBtn" aria-label="Fully assemble"><span class="button-symbol">◆</span> Assemble</button>
+          <button class="transport-btn play-btn" id="playBtn" aria-label="Play animation" title="Play / pause">
+            <svg id="playIcon" width="12" height="12" viewBox="0 0 16 16" fill="currentColor" aria-hidden="true"><path d="M4 2l8 6-8 6V2z"/></svg>
+            <svg id="pauseIcon" width="12" height="12" viewBox="0 0 16 16" fill="currentColor" style="display:none" aria-hidden="true"><path d="M3 2h3v12H3zm7 0h3v12h-3z"/></svg>
           </button>
-          <button class="transport-btn" id="resetBtn" aria-label="Reset to assembled">
-            <svg width="12" height="12" viewBox="0 0 16 16" fill="currentColor"><path d="M13.5 8a5.5 5.5 0 11-1.6-3.9L13 5.1V1h-2v2.1A7 7 0 1015 8h-1.5z"/></svg>
+          <button class="transport-btn reset-btn" id="resetBtn" aria-label="Reset exhibit" title="Reset">
+            <svg width="13" height="13" viewBox="0 0 16 16" fill="currentColor" aria-hidden="true"><path d="M13.5 8a5.5 5.5 0 11-1.6-3.9L13 5.1V1h-2v2.1A7 7 0 1015 8h-1.5z"/></svg>
           </button>
         </div>
       </footer>
-
-      <div class="labels-layer" id="labelsLayer" aria-live="polite"></div>
-      <div class="showcase-indicator" id="showcaseIndicator" style="display:none">
-        <span class="live-dot"></span> Showcase <span id="showcaseTimer">20</span>s <button id="cancelShowcase" aria-label="Cancel showcase">✕</button>
-      </div>
+      <div class="showcase-indicator" id="showcaseIndicator"><span class="live-dot"></span> Showcase <span id="showcaseTimer">20</span>s <button id="cancelShowcase" aria-label="Cancel showcase">✕</button></div>
     </div>
   `;
-
-  // mobile panel toggle
-  const mToggle = document.createElement('button');
-  mToggle.className = 'mobile-panel-toggle';
-  mToggle.textContent = 'Details ↑';
-  mToggle.setAttribute('aria-label', 'Show details panel');
-  mToggle.setAttribute('aria-expanded', 'false');
-  mToggle.addEventListener('click', () => {
-    const inspector = getEl('inspector');
-    const expanded = inspector.classList.toggle('expanded');
-    mToggle.textContent = expanded ? 'Hide ↓' : 'Details ↑';
-    mToggle.setAttribute('aria-expanded', String(expanded));
-    mToggle.setAttribute('aria-label', expanded ? 'Hide details panel' : 'Show details panel');
-  });
-  app.appendChild(mToggle);
-
   canvasElement = getEl<HTMLCanvasElement>('scene');
-  getEl('loading').style.display = 'none';
-  document.getElementById('boot-loading')?.remove();
 }
 
 function buildPartsList() {
   const list = getEl('partsList');
-  const categories: Record<string, string> = { Body: 'Body', Optics: 'Lens / Optics', Electronics: 'Electronics', Hardware: 'Hardware' };
-  const order = ['Body', 'Optics', 'Electronics', 'Hardware'] as const;
-  order.forEach(cat => {
+  const categories = { Body: 'Body', Optics: 'Lens / Optics', Electronics: 'Electronics', Hardware: 'Hardware' } as const;
+  for (const category of Object.keys(categories) as (keyof typeof categories)[]) {
+    const components = model.components.filter(component => component.category === category);
     const group = document.createElement('details');
     group.className = 'part-category';
-    group.innerHTML = `<summary><span class="cat-caret">▼</span><span>${categories[cat]}</span><span class="cat-count">${model.components.filter(c => c.category === cat).length}</span></summary>`;
-    const ul = document.createElement('div'); ul.style.padding = '4px 0 6px';
-    model.components.filter(c => c.category === cat).forEach(c => {
-      const btn = document.createElement('button');
-      btn.className = 'part-item'; btn.dataset.id = c.id;
-      btn.innerHTML = `${escapeHtml(c.name)}<span class="part-item-dot" style="display:none">●</span>`;
-      btn.addEventListener('click', () => selectPart(c.id));
-      ul.appendChild(btn);
-    });
-    group.appendChild(ul);
+    group.innerHTML = `<summary><span class="cat-caret">▼</span><span>${categories[category]}</span><span class="cat-count">${components.length}</span></summary>`;
+    const items = document.createElement('div');
+    items.className = 'part-category-items';
+    for (const component of components) {
+      const button = document.createElement('button');
+      button.className = 'part-item';
+      button.dataset.id = component.id;
+      button.innerHTML = `${escapeHtml(component.name)}<span class="part-item-dot">●</span>`;
+      on(button, 'click', () => selectPart(component.id));
+      items.appendChild(button);
+    }
+    group.appendChild(items);
     list.appendChild(group);
-  });
+  }
 }
 
 function initScene() {
   const container = getEl('viewContainer');
   const rect = container.getBoundingClientRect();
-  renderer = new THREE.WebGLRenderer({ antialias: window.devicePixelRatio <= 2, canvas: canvasElement, alpha: true });
+  const width = Math.max(1, Math.round(rect.width));
+  const height = Math.max(1, Math.round(rect.height));
+  renderer = new THREE.WebGLRenderer({ antialias: window.devicePixelRatio <= 2, canvas: canvasElement, alpha: true, powerPreference: 'high-performance' });
   renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
-  renderer.setSize(rect.width, rect.height);
+  renderer.setSize(width, height, false);
   renderer.shadowMap.enabled = true;
   renderer.shadowMap.type = THREE.PCFSoftShadowMap;
   renderer.toneMapping = THREE.ACESFilmicToneMapping;
-  renderer.toneMappingExposure = 1.35;
+  renderer.toneMappingExposure = 1.08;
   renderer.setClearColor('#151719', 0);
 
   scene = new THREE.Scene();
-  // environment
+  const room = new RoomEnvironment();
   const pmrem = new THREE.PMREMGenerator(renderer);
-  const envScene = new THREE.Scene();
-  envScene.background = new THREE.Color('#2d2e37');
-  const pointLight1 = new THREE.Mesh(new THREE.SphereGeometry(3, 16, 16), new THREE.MeshBasicMaterial({ color: '#ffeedd' }));
-  pointLight1.position.set(6, 8, 6); envScene.add(pointLight1);
-  const pointLight2 = new THREE.Mesh(new THREE.SphereGeometry(2, 16, 16), new THREE.MeshBasicMaterial({ color: '#ddeeff' }));
-  pointLight2.position.set(-4, 4, 5); envScene.add(pointLight2);
-  const envTarget = pmrem.fromScene(envScene, 0.025, 0.1, 100);
-  scene.environment = envTarget.texture;
-  scene.environmentIntensity = 0.95;
-  scene.add(new THREE.AmbientLight('#dfdde0', 0.55));
+  environmentTarget = pmrem.fromScene(room, 0.035, 0.1, 100);
+  scene.environment = environmentTarget.texture;
+  scene.environmentIntensity = 0.85;
+  room.dispose();
+  pmrem.dispose();
 
-  // Key light
-  const key = new THREE.SpotLight('#fff5e8', 110, 20, Math.PI * 0.28, 0.6, 1.0);
-  key.position.set(6, 8, 5);
-  key.target.position.set(0, 0, 0);
+  const key = new THREE.DirectionalLight('#fff4e5', 2.7);
+  key.position.set(4, 7, 8);
   key.castShadow = true;
-  key.shadow.mapSize.set(1024, 1024);
+  key.shadow.mapSize.set(2048, 2048);
+  key.shadow.camera.left = -9;
+  key.shadow.camera.right = 9;
+  key.shadow.camera.top = 9;
+  key.shadow.camera.bottom = -9;
   key.shadow.camera.near = 0.1;
-  key.shadow.camera.far = 20;
-  scene.add(key); scene.add(key.target);
+  key.shadow.camera.far = 28;
+  key.shadow.bias = -0.0004;
+  key.shadow.normalBias = 0.025;
+  scene.add(key);
+  const fill = new THREE.DirectionalLight('#d9e7ff', 1.35);
+  fill.position.set(-5, 3, 5);
+  scene.add(fill);
+  const rim = new THREE.DirectionalLight('#f0f3ff', 1.8);
+  rim.position.set(-2, 5, -6);
+  scene.add(rim);
 
-  // Fill light
-  const fill = new THREE.DirectionalLight('#dde8ff', 0.8);
-  fill.position.set(-4, 5, 4); scene.add(fill);
-
-  // Rim light
-  const rim = new THREE.DirectionalLight('#e0f0ff', 0.55);
-  rim.position.set(-3, 6, -4); scene.add(rim);
-
-  // Ground shadow
-  const ground = new THREE.Mesh(new THREE.PlaneGeometry(20, 20), new THREE.MeshStandardMaterial({ color: '#131315', metalness: 0.1, roughness: 0.6 }));
+  const ground = new THREE.Mesh(new THREE.PlaneGeometry(40, 40), new THREE.ShadowMaterial({ color: '#000000', opacity: 0.32 }));
   ground.rotation.x = -Math.PI / 2;
-  ground.position.y = -2.2;
+  ground.position.y = -1.72;
   ground.receiveShadow = true;
   scene.add(ground);
 
   model = new CameraModel();
   scene.add(model.root);
+  applyViewMode('materials');
+  updateAssembly(0);
+  updateApertureDisplay();
 
-  camera = new THREE.PerspectiveCamera(30, rect.width / rect.height, 0.1, 100);
-  camera.position.set(3.56, 1.77, 5.94);
-  camera.lookAt(0, 0.16, 0.15);
-
+  camera = new THREE.PerspectiveCamera(32, width / height, 0.08, 160);
   controls = new OrbitControls(camera, canvasElement);
   controls.enableDamping = true;
-  controls.dampingFactor = 0.07;
-  controls.rotateSpeed = 0.55;
-  controls.minDistance = 2.5;
-  controls.maxDistance = 18;
-  controls.maxPolarAngle = Math.PI * 0.55;
-  controls.target.set(0, 0.16, 0.15);
+  controls.dampingFactor = 0.075;
+  controls.rotateSpeed = 0.58;
+  controls.minDistance = 1.0;
+  controls.maxDistance = 90;
+  controls.maxPolarAngle = Math.PI * 0.78;
   controls.enablePan = true;
-  controls.update();
-
   controls.addEventListener('start', () => {
-    // Pause showcase on user input
-    if (showcase) cancelShowcase();
+    cancelShowcase();
+    cancelPlayTween();
     poseTween = null;
+    activePreset = null;
+    updatePresetButtons();
   });
+  goToPose('hero', 0);
 
-  // Lighting across the view
+  buildClickables();
+  buildPartsList();
+  wireEventListeners();
   startRender();
 }
 
 function startRender() {
-  let t = 0;
-  function animate(now: number) {
-    requestAnimationFrame(animate);
-    t += 0.016;
+  let previousTime = performance.now();
+  const animate = (now: number) => {
+    if (!rendering) return;
+    renderFrameId = requestAnimationFrame(animate);
+    const dt = Math.min(0.05, Math.max(0.001, (now - previousTime) / 1000));
+    previousTime = now;
     if (poseTween) {
       const alpha = Math.min(1, (now - poseTween.start) / poseTween.duration);
-      const ease = 1 - Math.pow(1 - alpha, 3);
-      camera.position.lerpVectors(poseTween.fromPos, poseTween.toPos, ease);
-      controls.target.lerpVectors(poseTween.fromTarget, poseTween.toTarget, ease);
-      camera.lookAt(controls.target);
-      if (alpha >= 1) { poseTween = null; }
+      const eased = 1 - Math.pow(1 - alpha, 3);
+      camera.position.lerpVectors(poseTween.fromPos, poseTween.toPos, eased);
+      controls.target.lerpVectors(poseTween.fromTarget, poseTween.toTarget, eased);
+      if (alpha >= 1) poseTween = null;
     }
     if (playTween) {
-      const alpha = Math.min(1, (now - playTween.start) / playTween.duration);
-      const ease = alpha < 0.5 ? 2 * alpha * alpha : 1 - Math.pow(-2 * alpha + 2, 2) / 2;
-      assembly = Math.round(playTween.from + (playTween.to - playTween.from) * ease);
-      updateAssembly(assembly);
-      if (alpha >= 1) { playTween = null; playing = false; updatePlayBtn(); }
+      const tween = playTween;
+      const alpha = Math.min(1, (now - tween.start) / tween.duration);
+      const eased = alpha < 0.5 ? 2 * alpha * alpha : 1 - Math.pow(-2 * alpha + 2, 2) / 2;
+      updateAssembly(alpha >= 1 ? tween.to : THREE.MathUtils.lerp(tween.from, tween.to, eased));
+      if (alpha >= 1) {
+        playTween = null;
+        updatePlayButton();
+      }
     }
-    model.iris.update(0.016);
-    model.animateShutter(0.016);
-    if (model.rayGroup.visible) {
-      model.updateRays(0.016, t);
-    }
+    model.iris.update(dt);
+    model.animateShutter();
+    model.updateRays(dt, now / 1000);
     controls.update();
     renderer.render(scene, camera);
     updateLabelPosition();
-  }
-  requestAnimationFrame(animate);
+  };
+  renderFrameId = requestAnimationFrame(animate);
 }
 
 function updateAssembly(value: number) {
-  assembly = value;
-  for (const c of model.components) {
-    model.setExplosion(c.id, value, undefined, false);
-  }
-  model.iris.update(0.0);
-  // update fill
-  const fill = getEl('assemblyFill');
-  fill.style.width = `${value}%`;
+  assembly = THREE.MathUtils.clamp(value, 0, 100);
+  model.interpolateExplosion(assembly);
+  const display = Math.round(assembly);
+  getEl('assemblyFill').style.width = `${assembly}%`;
   const slider = getEl<HTMLInputElement>('assemblyInput');
-  slider.value = String(value);
-  slider.setAttribute('aria-valuetext', `${value} percent assembled`);
-  const badge = getEl('assemblyBadge');
-  badge.textContent = `${value}%`;
-  const pctDisplay = getEl('assemblyPercent');
-  pctDisplay.innerHTML = `${value}<small>%</small>`;
-  badge.classList.toggle('animated', value > 0);
-  // update shell data-attr to control UI visibility
-  const shell = document.querySelector('.app-shell')!;
-  shell.setAttribute('data-assembled', value <= 0.5 ? 'true' : 'false');
+  slider.value = String(assembly);
+  slider.setAttribute('aria-valuetext', `${display} percent exploded`);
+  getEl('assemblyBadge').textContent = `${display}%`;
+  getEl('assemblyPercent').innerHTML = `${display}<small>%</small>`;
+  getEl('assemblyBadge').classList.toggle('animated', assembly > 0);
+  document.querySelector('.app-shell')?.setAttribute('data-assembled', String(assembly <= 0.01));
 }
 
-function setExplodeTarget(target: number, durationMs = 800) {
+function updatePlayButton() {
+  const playing = playTween !== null;
+  getEl('playIcon').style.display = playing ? 'none' : 'inline';
+  getEl('pauseIcon').style.display = playing ? 'inline' : 'none';
+  getEl('playBtn').setAttribute('aria-label', playing ? 'Pause animation' : 'Play animation');
+}
+
+function setExplodeTarget(target: number, durationMs = 1200) {
   cancelPlayTween();
-  playTween = {
-    from: assembly, to: target,
-    start: performance.now(), duration: reducedMotion ? 0.1 : durationMs,
-  };
-  playing = true;
-  updatePlayBtn();
+  playTween = { from: assembly, to: target, start: performance.now(), duration: reducedMotion ? 1 : durationMs };
+  updatePlayButton();
 }
 
 function cancelPlayTween() {
   playTween = null;
-  updatePlayBtn();
-}
-
-function updatePlayBtn() {
-  const btn = getEl('playBtn');
-  const play = getEl('playIcon');
-  const pause = getEl('pauseIcon');
-  const isShowingPlay = !playTween && !playing;
-  play.style.display = isShowingPlay ? 'inline' : 'none';
-  pause.style.display = isShowingPlay ? 'none' : 'inline';
-  btn.setAttribute('aria-label', isShowingPlay ? 'Play animation' : 'Pause animation');
-}
-
-function selectPart(id: string | null) {
-  selectedId = id;
-  const content = getEl('inspectionContent');
-  if (!id) {
-    content.innerHTML = '<div class="inspection-default">Hover a part to see its name.<br>Click to select.</div>';
-    model.iris.group.visible = true;
-  } else {
-    const c = model.components.find(c => c.id === id);
-    if (!c) { content.innerHTML = ''; return; }
-    content.innerHTML = `
-      <div class="inspection-name">${escapeHtml(c.name)}</div>
-      <div class="inspection-category">${escapeHtml(c.category)}</div>
-      <div class="inspection-description">${escapeHtml(c.description)}</div>
-    `;
-    if (c.iris) {
-      // show iris
-      model.root.traverse(obj => {
-        obj.userData._scaleBefore = obj.visible;
-        obj.visible = true;
-      });
-    }
-  }
-  // update parts list selection
-  document.querySelectorAll('.part-item').forEach(btn => {
-    const isSelected = btn.getAttribute('data-id') === id;
-    btn.classList.toggle('selected', isSelected);
-    (btn.querySelector('.part-item-dot') as HTMLElement).style.display = isSelected ? 'inline' : 'none';
-  });
-}
-
-// Label positioning
-function updateLabelPosition() {
-  const container = getEl('labelsLayer');
-  if (!selectedId) { container.innerHTML = ''; return; }
-  const comp = model.components.find(c => c.id === selectedId);
-  if (!comp) { container.innerHTML = ''; return; }
-  const target = comp.selectRoot ?? comp.group;
-  const worldPos = new THREE.Vector3();
-  target.getWorldPosition(worldPos);
-  const v = worldPos.clone().project(camera);
-  const rect = canvasElement.getBoundingClientRect();
-  const parentRect = getEl('viewContainer').getBoundingClientRect();
-  const x = (v.x * 0.5 + 0.5) * rect.width + (rect.left - parentRect.left);
-  const y = (-v.y * 0.5 + 0.5) * rect.height + (rect.top - parentRect.top);
-  if (Math.abs(v.x) > 1 || Math.abs(v.y) > 1 || v.z > 1) {
-    container.innerHTML = '';
-    return;
-  }
-  // only show one label
-  if (container.children.length === 0) {
-    const label = document.createElement('div');
-    label.className = 'parts-label'; label.id = 'partLabel';
-    label.innerHTML = `<span>${escapeHtml(comp.name)}</span><span class="category">${escapeHtml(comp.category)}</span>`;
-    container.appendChild(label);
-  }
-  const lbl = container.firstElementChild as HTMLElement;
-  if (lbl.dataset.partId !== selectedId) {
-    lbl.innerHTML = `<span>${escapeHtml(comp.name)}</span><span class="category">${escapeHtml(comp.category)}</span>`;
-    lbl.dataset.partId = selectedId;
-  }
-  lbl.style.left = `${x + 18}px`;
-  lbl.style.top = `${y - 30}px`;
-}
-
-// Pose transition
-function goToPose(preset: PresetName, durationMs = 900) {
-  const p = posPresets[preset];
-  if (!p) return;
-  poseTween = {
-    fromPos: camera.position.clone(), toPos: new THREE.Vector3(...p.pos),
-    fromTarget: controls.target.clone(), toTarget: new THREE.Vector3(...p.target),
-    start: performance.now(), duration: reducedMotion ? 60 : durationMs,
-  };
-  // Update UI
-  document.querySelectorAll('.btn-preset').forEach(btn => {
-    btn.classList.toggle('active', btn.getAttribute('data-preset') === preset);
-  });
-}
-
-// Showcase
-function startShowcase() {
-  cancelShowcase();
-  showcase = true; showcaseStartTime = performance.now();
-  getEl('showcaseIndicator').style.display = 'flex';
-  let priorEventTime = -1;
-  const timerEl = getEl('showcaseTimer');
-  function update(now: number) {
-    if (!showcase) return;
-    const elapsed = (now - showcaseStartTime) / 1000;
-    timerEl.textContent = String(Math.ceil(Math.max(0, 20 - elapsed)));
-    if (elapsed >= 20) {
-      cancelShowcase(); selectPart(null); setExplodeTarget(0, 1200); goToPose('hero', 1000);
-      return;
-    }
-    for (const action of SHOWCASE_SCORE) {
-      if (action.at > priorEventTime && action.at <= elapsed) {
-        switch (action.type) {
-          case 'pose': goToPose(action.preset as PresetName, 800); break;
-          case 'assembly': setExplodeTarget(action.to, action.duration * 1000); break;
-          case 'aperture': model.iris.set(action.value); aperture = action.value; updateApertureDisplay(); break;
-          case 'shutter': model.releaseShutter(); break;
-          case 'rays': model.rayGroup.visible = action.value; break;
-          case 'select': selectPart(action.id); break;
-        }
-        priorEventTime = action.at;
-      }
-    }
-    showcaseFrameId = requestAnimationFrame(update);
-  }
-  showcaseFrameId = requestAnimationFrame(update);
+  if (document.getElementById('playBtn')) updatePlayButton();
 }
 
 function cancelShowcase() {
   showcase = false;
-  getEl('showcaseIndicator').style.display = 'none';
   cancelAnimationFrame(showcaseFrameId);
+  getEl('showcaseIndicator')?.classList.remove('visible');
+  document.querySelector('.app-shell')?.classList.remove('showcase-active');
+  cancelPlayTween();
+}
+
+function startShowcase() {
+  cancelShowcase();
+  updateAssembly(0);
+  selectPart(null);
+  getEl<HTMLInputElement>('lightRayToggle').checked = false;
+  model.rayGroup.visible = false;
+  showcase = true;
+  showcaseStartTime = performance.now();
+  getEl('showcaseIndicator').classList.add('visible');
+  document.querySelector('.app-shell')?.classList.add('showcase-active');
+  goToPose('hero', 0);
+  const fired = new Set<number>();
+  const update = (now: number) => {
+    if (!showcase) return;
+    const elapsed = (now - showcaseStartTime) / 1000;
+    getEl('showcaseTimer').textContent = String(Math.ceil(Math.max(0, 20 - elapsed)));
+    if (elapsed >= 20) {
+      cancelShowcase();
+      updateAssembly(0);
+      selectPart(null);
+      setAperture(1.8);
+      goToPose('hero', reducedMotion ? 0 : 300);
+      return;
+    }
+    SHOWCASE_SCORE.forEach((action, index) => {
+      if (elapsed < action.at || fired.has(index)) return;
+      fired.add(index);
+      switch (action.type) {
+        case 'pose': goToPose(action.preset as PresetName, 800); break;
+        case 'assembly': setExplodeTarget(action.to, action.duration * 1000); break;
+        case 'aperture': setAperture(action.value); break;
+        case 'shutter': model.releaseShutter(); break;
+        case 'rays': model.rayGroup.visible = action.value; break;
+        case 'select': selectPart(action.id); break;
+      }
+    });
+    showcaseFrameId = requestAnimationFrame(update);
+  };
+  showcaseFrameId = requestAnimationFrame(update);
+}
+
+function setAperture(value: number) {
+  aperture = THREE.MathUtils.clamp(value, 1.8, 16);
+  getEl<HTMLInputElement>('apertureInput').value = String(aperture);
+  model.iris.set(aperture);
+  updateApertureDisplay();
 }
 
 function updateApertureDisplay() {
-  const el = getEl('apertureDisplay');
-  const display = aperture < 10 ? aperture.toFixed(1) : aperture.toFixed(0);
-  el.textContent = `f/${display}`;
+  const display = aperture < 10 ? aperture.toFixed(1) : aperture.toFixed(1).replace(/\.0$/, '');
+  getEl('apertureDisplay').textContent = `f/${display}`;
   getEl('apertureInput').setAttribute('aria-valuetext', `f/${display}`);
 }
 
-function setMode(m: ViewMode) {
-  mode = m;
-  model.applyViewMode(m);
-  document.querySelectorAll('.btn-mode').forEach(btn => {
-    btn.classList.toggle('active', btn.getAttribute('data-mode') === m);
-  });
-  const shell = document.querySelector('.app-shell') as HTMLElement;
-  shell.className = `app-shell mode-${m}${showcase ? ' showcase-active' : ''}`;
-  shell.setAttribute('data-assembled', assembly <= 0.5 ? 'true' : 'false');
+function applyViewMode(nextMode: ViewMode) {
+  mode = nextMode;
+  model.applyViewMode(mode);
+  model.setHighlight(selectedId ?? hoveredId);
+  document.querySelectorAll('.btn-mode').forEach(button => button.classList.toggle('active', button.getAttribute('data-mode') === mode));
+  const shell = document.querySelector('.app-shell');
+  shell?.classList.remove('mode-materials', 'mode-technical', 'mode-xray');
+  shell?.classList.add(`mode-${mode}`);
 }
 
-// Raycast picker
-const clickableObjects: THREE.Object3D[] = [];
-function buildClickables() {
-  model.getAllInteractables().forEach(obj => {
-    obj.traverse(child => {
-      if (child instanceof THREE.Mesh) clickableObjects.push(child);
+function selectPart(id: string | null) {
+  selectedId = id && model.components.some(component => component.id === id) ? id : null;
+  const selectedComponent = model.components.find(component => component.id === selectedId);
+  if (selectedComponent && !selectedComponent.group.visible) model.setIsolation(null);
+  model.setHighlight(selectedId ?? hoveredId);
+  const content = getEl('inspectionContent');
+  content.classList.toggle('has-selection', Boolean(selectedId));
+  content.classList.toggle('is-isolated', model.hasIsolation());
+  content.classList.toggle('sole-isolation', Boolean(selectedId && model.isSoleSelection(selectedId)));
+  if (!selectedId) {
+    content.innerHTML = '<div class="inspection-default">Hover a part to see its name.<br>Click to select and inspect.</div>';
+  } else {
+    const component = model.components.find(item => item.id === selectedId)!;
+    content.innerHTML = `
+      <div class="inspection-name">${escapeHtml(component.name)}</div>
+      <div class="inspection-category">${escapeHtml(component.category)} · ${escapeHtml(component.parent)}</div>
+      <div class="inspection-description">${escapeHtml(component.description)}</div>
+      <button class="btn btn-ghost btn-sm focus-part" id="focusSelected">${model.isSoleSelection(selectedId) ? 'Show full assembly' : 'Focus part'}</button>
+      <button class="btn btn-ghost btn-sm show-all-parts" id="showAllParts">Show all parts</button>
+    `;
+    on(getEl('focusSelected'), 'click', () => {
+      cancelShowcase();
+      if (model.isSoleSelection(selectedId!)) {
+        showAllParts();
+        return;
+      }
+      model.setIsolation([selectedId!]);
+      const aspect = canvasElement.clientWidth / Math.max(1, canvasElement.clientHeight);
+      goToCustomPose(poseForSelection(camera, model, selectedId!, aspect, controls.target));
+      selectPart(selectedId);
     });
-  });
+    on(getEl('showAllParts'), 'click', showAllParts);
+  }
+  document.querySelectorAll('.part-item').forEach(button => button.classList.toggle('selected', button.getAttribute('data-id') === selectedId));
+  updateLabelPosition();
 }
 
-function handleClick(event: MouseEvent | TouchEvent) {
-  if (showcase) { cancelShowcase(); return; }
-  if (playing || playTween) { cancelPlayTween(); }
-  const rect = canvasElement.getBoundingClientRect();
-  const clientX = 'changedTouches' in event ? event.changedTouches[0].clientX : event.clientX;
-  const clientY = 'changedTouches' in event ? event.changedTouches[0].clientY : event.clientY;
-  mouse.x = ((clientX - rect.left) / rect.width) * 2 - 1;
-  mouse.y = -((clientY - rect.top) / rect.height) * 2 + 1;
-  raycaster.setFromCamera(mouse, camera);
-  const hits = raycaster.intersectObjects(clickableObjects, false);
-  if (hits.length > 0) {
-    // Walk up to find which component owns this mesh
-    function findId(obj: THREE.Object3D): string | null {
-      for (const c of model.components) {
-        if (c.selectRoot === obj || c.group === obj) return c.id;
-      }
-      if (obj.parent && obj.parent !== model.root) return findId(obj.parent);
-      return null;
-    }
-    const id = findId(hits[0].object);
-    if (id) { selectPart(id); return; }
+function syncIsolationControls() {
+  const content = getEl('inspectionContent');
+  content.classList.toggle('is-isolated', model.hasIsolation());
+  content.classList.toggle('sole-isolation', Boolean(selectedId && model.isSoleSelection(selectedId)));
+  const focus = document.getElementById('focusSelected');
+  if (focus && selectedId) focus.textContent = model.isSoleSelection(selectedId) ? 'Show full assembly' : 'Focus part';
+}
+
+function showAllParts() {
+  model.setIsolation(null);
+  goToPose(assembly > 0 ? 'exploded' : 'hero');
+  selectPart(selectedId);
+}
+
+function updateLabelPosition() {
+  if (!camera || !model) return;
+  const labels = getEl('labelsLayer');
+  let label = labels.firstElementChild as HTMLElement | null;
+  if (!selectedId) {
+    label?.remove();
+    return;
   }
+  if (!label || label.dataset.partId !== selectedId) {
+    labels.replaceChildren();
+    const component = model.components.find(item => item.id === selectedId)!;
+    label = document.createElement('div');
+    label.className = 'parts-label';
+    label.dataset.partId = selectedId;
+    label.innerHTML = `<span>${escapeHtml(component.name)}</span><span class="category">${escapeHtml(component.category)}</span>`;
+    labels.appendChild(label);
+  }
+  const center = model.getBounds([selectedId]).getCenter(new THREE.Vector3()).project(camera);
+  const width = canvasElement.clientWidth;
+  const height = canvasElement.clientHeight;
+  if (center.z < -1 || center.z > 1 || Math.abs(center.x) > 1.05 || Math.abs(center.y) > 1.05) {
+    label.style.display = 'none';
+    return;
+  }
+  label.style.display = 'flex';
+  const x = (center.x * 0.5 + 0.5) * width;
+  const y = (-center.y * 0.5 + 0.5) * height;
+  label.style.left = `${THREE.MathUtils.clamp(x, 8, Math.max(8, width - label.offsetWidth - 86))}px`;
+  label.style.top = `${THREE.MathUtils.clamp(y, 55, height - 12)}px`;
+}
+
+function updatePresetButtons() {
+  document.querySelectorAll('.btn-preset').forEach(button => button.classList.toggle('active', button.getAttribute('data-preset') === activePreset));
+}
+
+function goToCustomPose(pose: CameraPose, durationMs = 900) {
+  activePreset = null;
+  updatePresetButtons();
+  setPoseTween(pose, durationMs);
+  syncIsolationControls();
+}
+
+function setPoseTween(pose: CameraPose, durationMs = 900) {
+  const position = new THREE.Vector3(...pose.position);
+  const target = new THREE.Vector3(...pose.target);
+  if (durationMs <= 0 || reducedMotion) {
+    camera.position.copy(position);
+    controls.target.copy(target);
+    controls.update();
+    poseTween = null;
+    return;
+  }
+  poseTween = {
+    fromPos: camera.position.clone(), toPos: position,
+    fromTarget: controls.target.clone(), toTarget: target,
+    start: performance.now(), duration: durationMs,
+  };
+}
+
+function goToPose(preset: PresetName, durationMs = 900) {
+  model.setIsolation(preset === 'sensor' ? ['sensorPCB', 'sensor', 'shutter'] : null);
+  const selectedComponent = model.components.find(component => component.id === selectedId);
+  if (selectedComponent && !selectedComponent.group.visible) selectPart(null);
+  const aspect = canvasElement.clientWidth / Math.max(1, canvasElement.clientHeight);
+  const pose = poseForPreset(camera, model, preset, aspect, assembly);
+  activePreset = preset;
+  updatePresetButtons();
+  setPoseTween(pose, durationMs);
+  syncIsolationControls();
+}
+
+function buildClickables() {
+  for (const component of model.components) component.group.userData.componentId = component.id;
+}
+
+function componentIdFor(object: THREE.Object3D): string | null {
+  let current: THREE.Object3D | null = object;
+  while (current && current !== model.root) {
+    if (typeof current.userData.componentId === 'string') return current.userData.componentId;
+    current = current.parent;
+  }
+  return null;
+}
+
+function pickPart(clientX: number, clientY: number) {
+  const rect = canvasElement.getBoundingClientRect();
+  pointer.set((clientX - rect.left) / rect.width * 2 - 1, -((clientY - rect.top) / rect.height) * 2 + 1);
+  raycaster.setFromCamera(pointer, camera);
+  const hits = raycaster.intersectObjects(model.getAllInteractables(), true);
+  return hits.length ? componentIdFor(hits[0].object) : null;
+}
+
+function enterPresentation(enter: boolean) {
+  document.querySelector('.app-shell')?.classList.toggle('presentation', enter);
+  if (!enter) return;
+  getEl('inspector').classList.remove('expanded');
+  const toggle = getEl('mobilePanelToggle');
+  toggle.setAttribute('aria-expanded', 'false');
+  toggle.textContent = 'Details ↑';
+}
+
+function resetExhibit() {
+  cancelShowcase();
+  cancelPlayTween();
+  updateAssembly(0);
   selectPart(null);
+  hoveredId = null;
+  applyViewMode('materials');
+  setAperture(1.8);
+  model.rayGroup.visible = false;
+  getEl<HTMLInputElement>('lightRayToggle').checked = false;
+  goToPose('hero', reducedMotion ? 0 : 650);
 }
 
-let hoveredId: string | null = null;
-let lastHoverTs = 0;
-
-function handlePointerMove(event: PointerEvent) {
-  const now = performance.now();
-  if (now - lastHoverTs < 50) return;
-  lastHoverTs = now;
-  if (isPointerDown) return;
-  const rect = canvasElement.getBoundingClientRect();
-  mouse.x = ((event.clientX - rect.left) / rect.width) * 2 - 1;
-  mouse.y = -((event.clientY - rect.top) / rect.height) * 2 + 1;
-  raycaster.setFromCamera(mouse, camera);
-  const hits = raycaster.intersectObjects(clickableObjects, false);
-  function findId(obj: THREE.Object3D): string | null {
-    for (const c of model.components) {
-      if (c.selectRoot === obj || c.group === obj) return c.id;
-    }
-    if (obj.parent && obj.parent !== model.root) return findId(obj.parent);
-    return null;
-  }
-  const id = hits.length > 0 ? findId(hits[0].object) : null;
-  if (id !== hoveredId) {
-    if (hoveredId) {
-      // remove outline (placeholder: reset emissive)
-      model.components.forEach(c => {
-        c.group.traverse(obj => { if (obj instanceof THREE.Mesh && (obj.material as THREE.MeshStandardMaterial).emissive) (obj.material as THREE.MeshStandardMaterial).emissive.setScalar(0); });
-      });
-    }
-    hoveredId = id;
-    if (id) {
-      canvasElement.style.cursor = 'pointer';
-      // Show subtle highlight
-      const comp = model.components.find(c => c.id === id);
-      comp?.group.traverse(obj => {
-        if (obj instanceof THREE.Mesh) {
-          const mat = obj.material as THREE.MeshStandardMaterial;
-          if (mat.emissive) mat.emissive.setHex(0x342a18);
-        }
-      });
-      // Also show label
-      if (!selectedId) {
-        getEl('inspectionContent').innerHTML = `<div class="inspection-name">${escapeHtml(comp?.name ?? id)}</div><div class="inspection-category">${escapeHtml(comp?.category ?? '')}</div><div class="inspection-description">${escapeHtml(comp?.description ?? '')}</div>`;
-      }
-    } else {
-      canvasElement.style.cursor = 'auto';
-      if (!selectedId) {
-        getEl('inspectionContent').innerHTML = '<div class="inspection-default">Hover a part to see its name.<br>Click to select.</div>';
-      }
-    }
-  }
-}
-
-// Wire events
 function wireEventListeners() {
-  // assembly slider
   const assemblyInput = getEl<HTMLInputElement>('assemblyInput');
-  assemblyInput.addEventListener('input', () => {
-    if (showcase) cancelShowcase();
+  on(assemblyInput, 'input', () => {
+    cancelShowcase();
     cancelPlayTween();
+    model.setIsolation(null);
     updateAssembly(Number(assemblyInput.value));
+    const aspect = canvasElement.clientWidth / Math.max(1, canvasElement.clientHeight);
+    goToCustomPose(poseForAssembly(camera, model, assembly, aspect, controls.target), reducedMotion ? 0 : 140);
   });
-
-  // explode / assemble / play / reset
-  getEl('explodeBtn').addEventListener('click', () => { setExplodeTarget(100, 1800); });
-  getEl('assembleBtn').addEventListener('click', () => { setExplodeTarget(0, 1500); });
-  getEl('playBtn').addEventListener('click', () => { playing ? cancelPlayTween() : setExplodeTarget(assembly >= 100 ? 0 : 100, 1600); });
-  getEl('resetBtn').addEventListener('click', () => {
-    cancelShowcase(); cancelPlayTween();
-    updateAssembly(0); selectPart(null); setMode('materials');
-    model.iris.set(1.8); aperture = 1.8; updateApertureDisplay();
-    model.rayGroup.visible = false;
-    goToPose('hero', 700);
+  on(assemblyInput, 'change', () => {
+    if (assembly === 100) goToPose('exploded');
+    else if (assembly === 0) goToPose('hero');
   });
-
-  // showcase
-  getEl('showcaseBtn').addEventListener('click', startShowcase);
-  getEl('showcaseBtn').setAttribute('aria-label', 'Play 20-second showcase');
-  getEl('cancelShowcase').addEventListener('click', cancelShowcase);
-
-  // presentation
-  getEl('presentBtn').addEventListener('click', () => {
-    const shell = document.querySelector('.app-shell')!;
-    shell.classList.add('presentation');
-    getEl('presentationBar').style.display = 'flex';
-    getEl('headerActions').style.display = 'none';
+  on(getEl('explodeBtn'), 'click', () => {
+    cancelShowcase();
+    setExplodeTarget(100, 1800);
+    goToPose('exploded', 1600);
   });
-  getEl('exitPresent').addEventListener('click', () => {
-    const shell = document.querySelector('.app-shell')!;
-    shell.classList.remove('presentation');
-    getEl('presentationBar').style.display = 'none';
-    getEl('headerActions').style.display = 'flex';
+  on(getEl('assembleBtn'), 'click', () => {
+    cancelShowcase();
+    setExplodeTarget(0, 1400);
+    goToPose('hero', 1300);
   });
-
-  // view presets
-  let readingPresets = document.querySelectorAll<HTMLButtonElement>('.btn-preset');
-  readingPresets.forEach(btn => {
-    btn.addEventListener('click', () => goToPose(btn.getAttribute('data-preset') as PresetName, 900));
+  on(getEl('playBtn'), 'click', () => {
+    cancelShowcase();
+    if (playTween) {
+      cancelPlayTween();
+      return;
+    }
+    const target = assembly >= 100 ? 0 : 100;
+    setExplodeTarget(target, 1700);
+    goToPose(target === 100 ? 'exploded' : 'hero', 1400);
   });
+  on(getEl('resetBtn'), 'click', resetExhibit);
+  on(getEl('showcaseBtn'), 'click', startShowcase);
+  on(getEl('cancelShowcase'), 'click', cancelShowcase);
+  on(getEl('presentBtn'), 'click', () => enterPresentation(true));
+  on(getEl('exitPresent'), 'click', () => enterPresentation(false));
 
-  // view modes
-  document.querySelectorAll('.btn-mode').forEach(btn => {
-    btn.addEventListener('click', () => setMode(btn.getAttribute('data-mode') as ViewMode));
+  document.querySelectorAll<HTMLButtonElement>('.btn-preset').forEach(button => on(button, 'click', () => {
+    cancelShowcase();
+    goToPose(button.dataset.preset as PresetName);
+  }));
+  document.querySelectorAll<HTMLButtonElement>('.btn-mode').forEach(button => on(button, 'click', () => {
+    cancelShowcase();
+    applyViewMode(button.dataset.mode as ViewMode);
+  }));
+
+  const apertureInput = getEl<HTMLInputElement>('apertureInput');
+  on(apertureInput, 'input', () => {
+    cancelShowcase();
+    setAperture(Number(apertureInput.value));
   });
-
-  // aperture
-  const apertureSlider = getEl<HTMLInputElement>('apertureInput');
-  apertureSlider.addEventListener('input', () => {
-    if (showcase) cancelShowcase();
-    aperture = Number(apertureSlider.value);
-    updateApertureDisplay();
-    model.iris.set(aperture);
-  });
-
-  // shutter release
-  getEl('shutterBtn').addEventListener('click', () => {
+  on(getEl('shutterBtn'), 'click', () => {
+    cancelShowcase();
     model.releaseShutter();
   });
-
-  // sensor focus preset
-  getEl('sensorFocusBtn').addEventListener('click', () => {
-    goToPose('sensor', 700);
+  on(getEl('sensorFocusBtn'), 'click', () => {
+    cancelShowcase();
+    cancelPlayTween();
+    if (assembly < 65) updateAssembly(65);
+    goToPose('sensor');
     selectPart('sensor');
   });
-
-  // clear selection
-  getEl('clearSelBtn').addEventListener('click', () => selectPart(null));
-
-  // light rays
+  on(getEl('clearSelBtn'), 'click', () => selectPart(null));
   const rayToggle = getEl<HTMLInputElement>('lightRayToggle');
-  rayToggle.addEventListener('change', () => {
-    if (showcase) cancelShowcase();
+  on(rayToggle, 'change', () => {
+    cancelShowcase();
     model.rayGroup.visible = rayToggle.checked;
   });
 
-  // escape = clear selection
-  document.addEventListener('keydown', (e) => {
-    if (e.key === 'Escape') {
-      selectPart(null);
-      cancelShowcase();
-      const shell = document.querySelector('.app-shell')!;
-      if (shell.classList.contains('presentation')) {
-        shell.classList.remove('presentation');
-        getEl('presentationBar').style.display = 'none';
-        getEl('headerActions').style.display = 'flex';
+  const mobileToggle = getEl('mobilePanelToggle');
+  on(mobileToggle, 'click', () => {
+    const expanded = getEl('inspector').classList.toggle('expanded');
+    mobileToggle.setAttribute('aria-expanded', String(expanded));
+    mobileToggle.setAttribute('aria-label', expanded ? 'Hide details panel' : 'Show details panel');
+    mobileToggle.textContent = expanded ? 'Hide ↓' : 'Details ↑';
+  });
+
+  on(document, 'keydown', event => {
+    if (event.key !== 'Escape') return;
+    selectPart(null);
+    cancelShowcase();
+    enterPresentation(false);
+  });
+
+  let isPointerDown = false;
+  let dragDistance = 0;
+  let pointerStart = { x: 0, y: 0 };
+  let hoverSample = 0;
+  on(canvasElement, 'pointerdown', event => {
+    isPointerDown = true;
+    pointerStart = { x: event.clientX, y: event.clientY };
+    dragDistance = 0;
+  });
+  on(canvasElement, 'pointermove', event => {
+    if (isPointerDown) {
+      dragDistance = Math.max(dragDistance, Math.hypot(event.clientX - pointerStart.x, event.clientY - pointerStart.y));
+      return;
+    }
+    if (event.pointerType === 'touch' || performance.now() - hoverSample < 55) return;
+    hoverSample = performance.now();
+    hoveredId = pickPart(event.clientX, event.clientY);
+    model.setHighlight(selectedId ?? hoveredId);
+    canvasElement.style.cursor = hoveredId ? 'pointer' : 'grab';
+    if (!selectedId) {
+      const content = getEl('inspectionContent');
+      if (hoveredId) {
+        const component = model.components.find(item => item.id === hoveredId)!;
+        content.innerHTML = `<div class="inspection-name">${escapeHtml(component.name)}</div><div class="inspection-category">${escapeHtml(component.category)}</div><div class="inspection-description">${escapeHtml(component.description)}</div>`;
+      } else {
+        content.innerHTML = '<div class="inspection-default">Hover a part to see its name.<br>Click to select and inspect.</div>';
       }
     }
   });
-
-  // canvas click/touch
-  let tapPos = { x: 0, y: 0 };
-  canvasElement.addEventListener('pointerdown', (e) => { isPointerDown = true; clickDistanceSq = 0; tapPos = { x: e.clientX, y: e.clientY }; });
-  canvasElement.addEventListener('pointermove', (e) => {
-    if (isPointerDown) { clickDistanceSq = Math.pow(e.clientX - tapPos.x, 2) + Math.pow(e.clientY - tapPos.y, 2); handlePointerMove(e); }
-  });
-  canvasElement.addEventListener('pointerup', (e) => {
+  on(canvasElement, 'pointerup', event => {
     isPointerDown = false;
-    if (clickDistanceSq < 36) handleClick(e);
-    clickDistanceSq = 0;
+    if (dragDistance > 6) return;
+    cancelShowcase();
+    cancelPlayTween();
+    selectPart(pickPart(event.clientX, event.clientY));
   });
-  canvasElement.addEventListener('pointerleave', () => {
+  on(canvasElement, 'pointercancel', () => { isPointerDown = false; });
+  on(canvasElement, 'pointerleave', () => {
     isPointerDown = false;
+    hoveredId = null;
+    model.setHighlight(selectedId);
+    if (!selectedId) getEl('inspectionContent').innerHTML = '<div class="inspection-default">Hover a part to see its name.<br>Click to select and inspect.</div>';
   });
-  canvasElement.addEventListener('touchstart', (e) => {
-    tapPos = { x: e.changedTouches[0].clientX, y: e.changedTouches[0].clientY };
-    clickDistanceSq = 0;
-  }, { passive: true });
-  canvasElement.addEventListener('touchend', (e) => {
-    if (clickDistanceSq < 36) handleClick(e);
-    clickDistanceSq = 0;
-  });
+  canvasElement.style.cursor = 'grab';
 
-  // resize
-  const ro = new ResizeObserver(() => {
-    const container = getEl('viewContainer');
-    const rect = container.getBoundingClientRect();
-    camera.aspect = rect.width / rect.height;
+  resizeObserver = new ResizeObserver(() => {
+    const rect = getEl('viewContainer').getBoundingClientRect();
+    const width = Math.max(1, Math.round(rect.width));
+    const height = Math.max(1, Math.round(rect.height));
+    renderer.setSize(width, height, false);
+    camera.aspect = width / height;
     camera.updateProjectionMatrix();
-    renderer.setSize(rect.width, rect.height);
+    if (activePreset) goToPose(activePreset, 0);
   });
-  ro.observe(getEl('viewContainer'));
-
-  // reduced motion
-  const mq = window.matchMedia('(prefers-reduced-motion: reduce)');
-  mq.addEventListener('change', (e) => { reducedMotion = e.matches; });
+  resizeObserver.observe(getEl('viewContainer'));
+  const motionQuery = window.matchMedia('(prefers-reduced-motion: reduce)');
+  motionQuery.addEventListener('change', event => { reducedMotion = event.matches; }, { signal: listeners.signal });
+  canvasElement.addEventListener('webglcontextlost', event => {
+    event.preventDefault();
+    rendering = false;
+    cancelAnimationFrame(renderFrameId);
+    showFallback('The browser interrupted the graphics context. Reload the page to restart the 3D exhibit.');
+  }, { signal: listeners.signal });
 }
 
-// Expose minimal debug
-(window as unknown as Record<string, unknown>).__EA = {
-  get state() {
-    return {
-      assembly, aperture: `f/${aperture.toFixed(1)}`,
-      parts: model.components.length,
-      selected: selectedId, mode, playing,
-      showcase, sensorExposed: false,
-      assembledError: model.components.reduce((s, c) => s + Math.abs((c.group.userData._stage as number) ?? 0), 0),
-      drawCalls: renderer?.info?.render?.calls ?? 0,
-      triangles: renderer?.info?.render?.triangles ?? 0,
-      motionReduced: reducedMotion,
-    };
-  },
-  setAssembly(v: number) { cancelPlayTween(); updateAssembly(v); },
-  select(id: string | null) { selectPart(id); },
-  setMode(m: string) { if (['materials', 'technical', 'xray'].includes(m)) setMode(m as ViewMode); },
-  reset() {
-    cancelShowcase(); cancelPlayTween();
-    updateAssembly(0); selectPart(null);
-    model.iris.set(1.8); aperture = 1.8; updateApertureDisplay();
-    goToPose('hero', 400);
-  },
-};
+function showFallback(message?: string) {
+  document.getElementById('boot-loading')?.remove();
+  getEl('loading').hidden = true;
+  const fallback = getEl('webglFallback');
+  fallback.hidden = false;
+  if (message) getEl('fallbackMessage').textContent = message;
+}
 
-// Bootstrap
+function exposeDebug() {
+  (window as unknown as Record<string, unknown>).__EA = {
+    get state() {
+      return {
+        assembly, aperture: `f/${aperture.toFixed(1)}`, parts: model.components.length,
+        visibleParts: model.components.filter(component => component.group.visible).length, selected: selectedId, mode,
+        playing: playTween !== null, showcase, sensorExposed: model.sensorExposed,
+        assembledError: model.components.reduce((sum, component) => sum + (component.group.userData.stage as number), 0),
+        drawCalls: renderer.info.render.calls, triangles: renderer.info.render.triangles, motionReduced: reducedMotion,
+        canvas: { width: canvasElement.clientWidth, height: canvasElement.clientHeight }, preset: activePreset,
+      };
+    },
+    setAssembly(value: number) { cancelShowcase(); cancelPlayTween(); updateAssembly(value); },
+    select(id: string | null) { selectPart(id); },
+    setMode(value: string) { if (['materials', 'technical', 'xray'].includes(value)) applyViewMode(value as ViewMode); },
+    preset(value: PresetName) { goToPose(value, 0); },
+    releaseShutter() { model.releaseShutter(); },
+    reset: resetExhibit,
+    transforms() {
+      return model.components.map(component => ({ id: component.id, position: component.group.position.toArray(), quaternion: component.group.quaternion.toArray() }));
+    },
+  };
+}
+
+function dispose() {
+  rendering = false;
+  cancelAnimationFrame(renderFrameId);
+  cancelAnimationFrame(showcaseFrameId);
+  listeners.abort();
+  resizeObserver?.disconnect();
+  controls?.dispose();
+  model?.dispose();
+  scene?.traverse(object => {
+    if (model.root.getObjectById(object.id)) return;
+    if (object instanceof THREE.Mesh || object instanceof THREE.LineSegments) {
+      object.geometry.dispose();
+      const materials = Array.isArray(object.material) ? object.material : [object.material];
+      materials.forEach(material => material.dispose());
+    }
+  });
+  environmentTarget?.dispose();
+  renderer?.dispose();
+}
+
 buildUI();
-// build after model is created so parts list can read components
-// we defer buildPartsList after model is queried
 try {
   initScene();
-  buildClickables();
-  buildPartsList();
-  wireEventListeners();
-} catch (err) {
-  getEl('loading').textContent = 'WebGL initialization failed. Please enable hardware acceleration in your browser.';
-  console.error(err);
+  exposeDebug();
+  document.getElementById('boot-loading')?.remove();
+  window.addEventListener('pagehide', event => { if (!event.persisted) dispose(); });
+} catch (error) {
+  showFallback();
+  console.error('Unable to initialize the 3D exhibit:', error);
 }

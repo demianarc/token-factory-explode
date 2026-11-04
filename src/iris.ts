@@ -1,7 +1,10 @@
 import * as THREE from 'three';
 import { ring } from './geometry';
 
-/** A schematic overlapping iris, evaluated from an assembled aperture setting. */
+/**
+ * Schematic nine-blade iris. Overlapping annular sectors share the optical
+ * axis; their inner radius and skew change together with the f-stop.
+ */
 export class Iris {
   readonly group = new THREE.Group();
   private blades: THREE.Mesh[] = [];
@@ -9,38 +12,49 @@ export class Iris {
   private target = 1.8;
 
   constructor() {
-    this.group.add(ring(0.72, 0.58, 0.035, new THREE.MeshStandardMaterial({ color: '#42474b', metalness: 0.9, roughness: 0.3 })));
-    const shape = new THREE.Shape();
-    shape.moveTo(0.07, 0);
-    shape.absarc(0, 0, 0.07, 0, Math.PI / 4, false);
-    shape.lineTo(0.8 * Math.cos(Math.PI / 4), 0.8 * Math.sin(Math.PI / 4));
-    shape.absarc(0, 0, 0.8, Math.PI / 4, 0, true);
-    shape.closePath();
-    const geo = new THREE.ExtrudeGeometry(shape, { depth: 0.008, bevelEnabled: false, curveSegments: 10 });
-    geo.translate(0, 0, 0.005);
+    this.group.add(ring(1.02, 0.87, 0.045, new THREE.MeshStandardMaterial({ color: '#45484a', metalness: 0.88, roughness: 0.34 })));
     for (let i = 0; i < 9; i++) {
-      const material = new THREE.MeshStandardMaterial({ color: i % 2 ? '#424442' : '#555954', metalness: 0.85, roughness: 0.42, side: THREE.DoubleSide });
-      const blade = new THREE.Mesh(geo, material);
-      blade.position.z = i * 0.009;
-      this.group.add(blade); this.blades.push(blade);
+      const material = new THREE.MeshStandardMaterial({
+        color: i % 2 ? '#353b3d' : '#484c4b',
+        metalness: 0.78,
+        roughness: 0.46,
+        side: THREE.DoubleSide,
+      });
+      const blade = new THREE.Mesh(new THREE.BufferGeometry(), material);
+      blade.position.z = 0.026 + i * 0.0025;
+      this.group.add(blade);
+      this.blades.push(blade);
     }
     this.set(1.8);
   }
 
-  set(f: number) { this.current = this.target = f; this.updateGeometry(); }
+  set(f: number) {
+    this.current = this.target = THREE.MathUtils.clamp(f, 1.8, 16);
+    this.updateGeometry();
+  }
 
   update(dt: number) {
     const next = THREE.MathUtils.damp(this.current, this.target, 12, dt);
-    if (Math.abs(next - this.current) > 0.001) { this.current = next; this.updateGeometry(); }
+    if (Math.abs(next - this.current) > 0.001) {
+      this.current = next;
+      this.updateGeometry();
+    }
   }
 
   private updateGeometry() {
-    const r = 0.105 + (16 - this.current) / 14.2 * 0.445;
+    const openingRadius = 0.075 + (16 - this.current) / 14.2 * 0.66;
+    const skew = (this.current - 1.8) / 14.2 * 0.19;
+    const halfSpan = THREE.MathUtils.degToRad(29);
     for (let i = 0; i < this.blades.length; i++) {
-      const a = i / this.blades.length * Math.PI * 2 + 0.16;
-      const pivot = 0.80 + (0.66 - r) * 0.30;
-      this.blades[i].position.set(Math.cos(a) * pivot, Math.sin(a) * pivot, i * 0.009);
-      this.blades[i].rotation.z = a + Math.acos(THREE.MathUtils.clamp(r / 0.8, 0.02, 0.98)) + 0.10;
+      const blade = this.blades[i];
+      const shape = new THREE.Shape();
+      shape.absarc(0, 0, 0.94, -halfSpan, halfSpan, false);
+      shape.absarc(0, 0, openingRadius, halfSpan, -halfSpan, true);
+      shape.closePath();
+      const geometry = new THREE.ExtrudeGeometry(shape, { depth: 0.004, bevelEnabled: false, curveSegments: 8 });
+      blade.geometry.dispose();
+      blade.geometry = geometry;
+      blade.rotation.z = i / this.blades.length * Math.PI * 2 + skew;
     }
   }
 

@@ -8,10 +8,44 @@ export function box(w: number, h: number, d: number, material: THREE.Material, r
   return mesh;
 }
 
-export function cylinder(rt: number, rb: number, height: number, material: THREE.Material, pos = [0, 0, 0], segments = 64) {
+export function cylinder(rt: number, rb: number, height: number, material: THREE.Material, pos = [0, 0, 0], segments = 64, axis: 'x' | 'y' | 'z' = 'z') {
   const mesh = new THREE.Mesh(new THREE.CylinderGeometry(rt, rb, height, segments), material);
-  mesh.rotation.x = Math.PI / 2;
+  if (axis === 'z') mesh.rotation.x = Math.PI / 2;
+  if (axis === 'x') mesh.rotation.z = Math.PI / 2;
   mesh.position.set(...pos as [number, number, number]);
+  return mesh;
+}
+
+export function rectFrame(w: number, h: number, innerW: number, innerH: number, depth: number, material: THREE.Material, pos = [0, 0, 0], radius = 0.08) {
+  const shape = new THREE.Shape();
+  roundedRectPath(shape, -w / 2, -h / 2, w, h, radius);
+  const hole = new THREE.Path();
+  roundedRectPath(hole, -innerW / 2, -innerH / 2, innerW, innerH, Math.min(radius * 0.5, innerW / 4, innerH / 4));
+  shape.holes.push(hole);
+  const geometry = new THREE.ExtrudeGeometry(shape, { depth, bevelEnabled: true, bevelSegments: 2, bevelSize: Math.min(0.025, depth * 0.2), bevelThickness: Math.min(0.018, depth * 0.2), curveSegments: 12 });
+  geometry.translate(0, 0, -depth / 2);
+  const mesh = new THREE.Mesh(geometry, material);
+  mesh.position.set(...pos as [number, number, number]);
+  return mesh;
+}
+
+/** Closed biconvex lens surface: radial profile revolved around the optical axis. */
+export function opticalElement(radius: number, thickness: number, material: THREE.Material) {
+  const profile: THREE.Vector2[] = [];
+  const edge = thickness * 0.16;
+  const segments = 18;
+  for (let i = 0; i <= segments; i++) {
+    const r = radius * i / segments;
+    const sag = thickness * 0.52 * (1 - (r / radius) ** 2);
+    profile.push(new THREE.Vector2(r, edge + sag));
+  }
+  for (let i = segments; i >= 0; i--) {
+    const r = radius * i / segments;
+    const sag = thickness * 0.34 * (1 - (r / radius) ** 2);
+    profile.push(new THREE.Vector2(r, -edge - sag));
+  }
+  const mesh = new THREE.Mesh(new THREE.LatheGeometry(profile, 72), material);
+  mesh.rotation.x = Math.PI / 2;
   return mesh;
 }
 
