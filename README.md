@@ -1,13 +1,17 @@
-# Explode Anything
+# Explode Anything · Nebius Token Factory edition
 
 An interactive, procedural Three.js exhibit of an unbranded mirrorless camera and detachable 50 mm prime lens. Drag to orbit, separate the assembly, inspect individual parts, operate a schematic aperture and shutter, and compare material, technical, and X-ray presentations.
+
+Original build by [Shivay Lamba](https://github.com/shivaylamba), adapted with permission from [Explode Anything](https://github.com/shivaylamba/explode-anything). This edition adds the official Token Factory logo, navy/lime palette, self-hosted typography and visible credits. See [edition provenance](BRAND-EDITION.md).
 
 ## Run locally
 
 Use a current Node.js release supported by Vite 7 (Node.js 20.19+ or 22.12+).
 
 ```sh
-npm install
+git clone https://github.com/demianarc/token-factory-explode.git
+cd token-factory-explode
+npm ci
 npm run dev
 ```
 
@@ -18,7 +22,7 @@ npm run build       # TypeScript check and production build
 npm run preview     # Serve the production build locally
 ```
 
-Dependencies are pinned in `package.json` and `package-lock.json`. No backend, account, API key, model download, or runtime AI request is used. The interface requests Google Fonts stylesheets but falls back to system sans-serif fonts if they are unavailable.
+Dependencies are pinned in `package.json` and `package-lock.json`. No backend, account, API key, model download, or runtime AI request is used. The TF edition self-hosts the official Gramatika and Inter fonts; exploring the exhibit makes no external model requests.
 
 ## Controls
 
@@ -103,3 +107,11 @@ No FPS claim is made: these checks exercise correctness and appearance in softwa
 - Technical edges and X-ray transparency are display aids, not CAD topology or volumetric imaging.
 - Bounds fitting conservatively includes per-part bounding corners, so some exploded angles intentionally retain extra canvas margin.
 - Mobile layout was checked in a Chromium viewport, not on a physical touch device. WebGL is required; the fallback explains the failure rather than providing a separate 2D exhibit.
+
+## Deploy
+
+Build with `npm run build` and serve `dist/` on a static host. No server secrets are required. Use the production build, rather than exposing the Vite development server.
+
+## Attribution and permissions
+
+The original repository does not publish a general open-source licence. This Nebius adaptation is made with permission confirmed by Dylan Bristot on 5 November 2026. Attribution is retained in the interface and source. Do not assume permission for unrelated redistribution or reuse of Nebius brand assets.
