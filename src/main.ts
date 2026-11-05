@@ -52,7 +52,7 @@ function buildUI() {
     <div class="app-shell mode-materials" data-assembled="true">
       <header class="top-bar">
         <div class="brand-lockup">
-          <div class="tf-lockup"><a href="https://tokenfactory.nebius.com/" aria-label="Nebius Token Factory"><img src="/brand/token-factory.svg" alt="Nebius Token Factory" width="154" height="21"></a><h1 class="tf-exhibit-name">Explode Anything</h1></div>
+          <div class="tf-lockup"><a href="https://tokenfactory.nebius.com/" aria-label="Nebius Token Factory"><img src="./brand/token-factory.svg" alt="Nebius Token Factory" width="154" height="21"></a><h1 class="tf-exhibit-name">Explode Anything</h1></div>
 
         </div>
         <p class="intro">Pull it apart. Discover what makes the image.</p>
